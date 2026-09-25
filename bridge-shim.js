@@ -168,4 +168,77 @@
     setTimeout(forceLandscape, 300);
     setTimeout(forceLandscape, 1300);
   });
+
+  /* ================= v2 浏览器适配补丁 ================= */
+
+  /* ---- 1) 窗口尺寸变化时重排 ----
+   * 原版为水墨屏做了「缩放硬锁」：_bootK 只在第一次 applyFit 算出并冻结，
+   * 之后即使窗口变小也沿用大窗口的 k → 内容溢出视口，底部按钮被裁、字超大。
+   * 浏览器里窗口大小常变，这里在 resize / orientationchange 时清掉冻结值，
+   * 让 applyFit 按当前视口重新计算。 */
+  var _rzT = null;
+  function refit() {
+    try { window._bootK = 0; window._lockedK = 0; } catch (e) {}
+    try { if (typeof window.applyFit === "function") { window.applyFit(); } } catch (e) {}
+    try { forceLandscape(); } catch (e) {}
+    relayoutNewsColumn();
+  }
+  /* ---- 1b) 右栏新闻列重排 ----
+   * .cr-wrap 是 display:table（height 相当于最小值，内容能撑破容器）。
+   * 大窗口启动时 fillNewsToHeight 塞满了新闻；缩小窗口后内容比盒子高，
+   * 表格被撑到 1079px，而 clampNewsToHeight 量的又是这个被撑大的盒子
+   * → 永远判定"没超高"、一条也不删，右栏整体溢出视口（底部裁切）。
+   * 打破死锁：临时把 .cr-body 切成 block+hidden 的受控盒，让测量回归
+   * 真实可用高度，裁完/填完再把 display/overflow 还原（全程同步执行，无闪烁）。 */
+  function relayoutNewsColumn() {
+    var run = function () {
+      try {
+        var body = document.querySelector(".cr-body");
+        var prevD = null, prevO = null;
+        if (body) {
+          prevD = body.style.display; prevO = body.style.overflow;
+          body.style.display = "block"; body.style.overflow = "hidden";
+        }
+        try { if (window.fitPagerBottom) { window.fitPagerBottom(); } } catch (e1) {}
+        try { if (window.fitNewsToList) { window.fitNewsToList(); } } catch (e2) {}
+        try { if (window.clampNewsToHeight) { window.clampNewsToHeight(); } } catch (e3) {}
+        try { if (window.fillNewsToHeight) { window.fillNewsToHeight(); } } catch (e4) {}
+        try { if (window.refreshPageInfo) { window.refreshPageInfo(); } } catch (e5) {}
+        if (body) { body.style.display = prevD; body.style.overflow = prevO; }
+        try { if (window.trimForecastToFit) { window.trimForecastToFit(); } } catch (e6) {}
+      } catch (e0) {}
+    };
+    setTimeout(run, 60);     /* 等 fit CSS 生效后再量 */
+    setTimeout(run, 420);    /* 二次保险（异步天气/新闻渲染可能又撑高） */
+  }
+  window.addEventListener("resize", function () {
+    if (_rzT) { clearTimeout(_rzT); }
+    _rzT = setTimeout(refit, 120);
+  });
+  window.addEventListener("orientationchange", function () {
+    setTimeout(refit, 220);
+  });
+
+  /* ---- 2) 桌面浏览器恢复设置页「原生滚动」 ----
+   * 原版把 #settingsMask 及各清单盒强制 overflow:hidden + touch-action:none，
+   * 滚动全靠触摸拖拽（bindSettingsDrag）。桌面浏览器没有 touch 事件，
+   * 滚轮/滚动条全部失效 —— 设置页只能看到第一屏，下面的项点不到。
+   * 现代浏览器原生滚动完全可靠，这里只对「鼠标精细指针」环境放开原生滚动；
+   * 手机/平板仍走原版的触摸拖拽逻辑，互不干扰。 */
+  var st2 = document.createElement("style");
+  st2.type = "text/css";
+  st2.textContent =
+    /* 四键等宽：原版横屏给 SETUP 键 flex:4、其余各占 1 份，
+       小窗口下三个键窄到装不下文字（MUSIC/RADIO/Q&A 相互叠字）。
+       改为四键等宽后文字正好放下。 */
+    "html body #mainPage.rot-land #btnBar .gear-btn{ flex:1 1 0 !important; -webkit-box-flex:1 !important; }\n" +
+    "@media (hover:hover) and (pointer:fine){\n" +
+    "  html body #settingsMask{ overflow-y:auto !important; overflow-x:hidden !important; touch-action:auto !important; }\n" +
+    "  html body .kdl-scrollbox, html body .radio-results, html body .radio-my,\n" +
+    "  html body .mu-list, html body #rssList{ overflow-y:auto !important; touch-action:auto !important; }\n" +
+    "  html body #settingsMask::-webkit-scrollbar{ width:10px; }\n" +
+    "  html body #settingsMask::-webkit-scrollbar-thumb{ background:#9a9a9a; border-radius:6px; }\n" +
+    "  html body #settingsMask::-webkit-scrollbar-track{ background:transparent; }\n" +
+    "}\n";
+  (document.head || document.documentElement).appendChild(st2);
 })();
