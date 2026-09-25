@@ -301,6 +301,11 @@
        小窗口下三个键窄到装不下文字（MUSIC/RADIO/Q&A 相互叠字）。
        改为四键等宽后文字正好放下。 */
     "html body #mainPage.rot-land #btnBar .gear-btn{ flex:1 1 0 !important; -webkit-box-flex:1 !important; }\n" +
+    /* 天气预报温度列防裁切：.wtemp 是固定 34% 宽 + nowrap + 右对齐 + overflow:hidden，
+       字体偏宽时（真机安卓字体、系统字号放大）"25~28°" 会从左边被裁成"5~28°"。
+       放开 overflow 让文本向左伸展进 wtxt 列右侧的空白区（天气文本通常只有两三个字，
+       右端大量留白，不会压字）。四个浮动列宽度总和不变，无换行风险。 */
+    "html body .wrow .wtemp{ overflow:visible !important; }\n" +
     "@media (hover:hover) and (pointer:fine){\n" +
     "  html body #settingsMask{ overflow-y:auto !important; overflow-x:hidden !important; touch-action:auto !important; }\n" +
     "  html body .kdl-scrollbox, html body .radio-results, html body .radio-my,\n" +
@@ -335,16 +340,15 @@
     "  html body #mainPage.landscape .weather-days{ font-size:calc(2.9vh * var(--wbscale,1)) !important; }\n" +
     "  html body #mainPage.landscape .weather-stale, html body #mainPage.landscape .wx-alert{ font-size:calc(2.6vh * var(--wbscale,1)) !important; }\n" +
     "  html body #mainPage.landscape .wx-remind{ font-size:calc(3.2vh * var(--wbscale,1)) !important; }\n" +
-    /* 日历：原引擎手机端 ~1.7vh 偏小，放大到 2.2vh（APK 布局可容纳）。
-       注意：引擎的日历自适应逻辑会写 #topWrap .mid-row > .card-cal 前缀的
-       !important 规则，特异性更高，这里必须用更深的路径压过它。 */
-    "  html body #mainPage.landscape .calendar, html body #mainPage.landscape .calendar table, html body #mainPage.landscape .calendar td .dnum{ font-size:calc(2.2vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .calendar th{ font-size:calc(1.9vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .calendar td .dsub{ font-size:calc(1.35vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar table,\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dnum{ font-size:calc(2.2vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar th{ font-size:calc(1.9vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dsub{ font-size:calc(1.35vh * var(--wbscale,1)) !important; }\n" +
+    /* 日历：不钉字号！引擎自带 kdCalFit() 会把日历表格精确拟合进卡片
+       （二分找最大字号 + 行距微调 + "宁可字小也不裁末行"安全网）。
+       此前这里用 2.2vh 钉死，特异性压过了 kdCalCss 注入的拟合规则，
+       导致拟合失效、末行（27~30 日）超出卡片被裁 21~24px。
+       撤掉钉值后 kdCalFit 自动撑满可用高度且保证完整显示。
+       但原版 .calendar th { height:34px } 是固定像素：小屏卡片里表头
+       吃掉约 1/4 高度（APK 上只占 1/10），把拟合结果压得比 APK 比例小。
+       这里把表头高度按 APK 比例（34px/825 ≈ 4.1vh）缩放，拟合空间就公平了。 */
+    "  html body #mainPage.landscape .card-cal .calendar th{ height:calc(4.1vh * var(--wbscale,1)) !important; }\n" +
     /* 新闻：APK 标题 4.6vh / 日期 3.4vh，各收一档 */
     "  html body #mainPage.landscape .news-title{ font-size:calc(4.1vh * var(--wbscale,1)) !important; }\n" +
     "  html body #mainPage.landscape .news-title.t-long{ font-size:calc(3.6vh * var(--wbscale,1)) !important; }\n" +
