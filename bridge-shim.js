@@ -316,47 +316,58 @@
     "}\n";
   (document.head || document.documentElement).appendChild(st2);
 
-  /* ---- 3) 宽屏视口的「APK 比例字号校准」 ----
+  /* ---- 3) 横屏版式的「APK 比例字号校准」----
    * 原版字号的相对比例是在 1200x825（宽高比 1.45:1）的 H9 墨水屏上调好的。
    * 手机横屏（宽高比普遍 2:1 以上）下列宽随视口横向拉伸，而字号仍按"高度-derived k"
    * 缩放，于是：时钟贴满被拉宽的左栏 -> 偏大；新闻/天气被"填满高度"逻辑放大 -> 偏大；
-   * 日历相对反而显小。这里在宽横屏（aspect-ratio >= 3:2）下，按 APK 参考视口实测的
-   * vh 比例钉住各板块字号（!important 盖过引擎随时重写的内联样式）：
-   *   APK 实测(1200x825)：时钟 21.0vh、日期 4.75vh、天气实况 6.7vh、天气盒 3.33vh、
-   *   预报行 3.07vh、日历数字 1.82vh、新闻标题 4.6vh、新闻日期 3.4vh、诗歌 5.0vh。
-   * 结合用户反馈微调：时钟/天气/新闻各收一档，日历放大。 */
+   * 日历相对反而显小。
+   * 作用域：直接挂 #mainPage.landscape（横屏类名由垫片按实际方向维护），
+   * 不再用 @media (min-aspect-ratio) —— 部分手机浏览器对分数 aspect-ratio
+   * 媒体查询支持不佳，会导致校准整块失效（用户端实拍证实过）。
+   * 竖屏时垫片会移除 landscape 类，此处规则自动失配，竖版管线不受影响。
+   * 数值 = APK 参考视口实测 vh 比例 × 用户要求的 0.8 缩放：
+   *   天气(实况/盒/预报行/天数行/预警/提醒)、诗歌、新闻(标题/长标题/日期)
+   *   全部再乘 0.8（用户 2026-09-26 反馈"缩小到原来的0.8倍"）。 */
   var st3 = document.createElement("style");
   st3.type = "text/css";
   st3.textContent =
-    "@media (min-aspect-ratio: 3/2){\n" +
-    /* 时钟：APK 21.0vh，略收 */
+    /* 时钟：APK 21.0vh × 0.92（此前已微调） */
     "  html body #mainPage.landscape #clockH, html body #mainPage.landscape #clockM{ font-size:calc(20.5vh * var(--wbscale,1)) !important; letter-spacing:0.06em !important; }\n" +
     "  html body #mainPage.landscape .date-line{ font-size:calc(4.7vh * var(--wbscale,1)) !important; }\n" +
     "  html body #mainPage.landscape .lunar-line{ font-size:calc(4.4vh * var(--wbscale,1)) !important; }\n" +
-    /* 天气：整体收一档（APK 实况 6.7vh / 盒 3.33vh / 预报行 3.07vh / 四日 3.47vh） */
-    "  html body #mainPage.landscape .weather-now{ font-size:calc(5.8vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .weather-box{ font-size:calc(3.1vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .wrow{ font-size:calc(2.7vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .weather-days{ font-size:calc(2.9vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .weather-stale, html body #mainPage.landscape .wx-alert{ font-size:calc(2.6vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .wx-remind{ font-size:calc(3.2vh * var(--wbscale,1)) !important; }\n" +
-    /* 日历：不钉字号！引擎自带 kdCalFit() 会把日历表格精确拟合进卡片
-       （二分找最大字号 + 行距微调 + "宁可字小也不裁末行"安全网）。
-       此前这里用 2.2vh 钉死，特异性压过了 kdCalCss 注入的拟合规则，
-       导致拟合失效、末行（27~30 日）超出卡片被裁 21~24px。
-       撤掉钉值后 kdCalFit 自动撑满可用高度且保证完整显示。
-       但原版 .calendar th { height:34px } 是固定像素：小屏卡片里表头
-       吃掉约 1/4 高度（APK 上只占 1/10），把拟合结果压得比 APK 比例小。
+    /* 天气：APK 实况 6.7vh / 盒 3.33vh / 预报行 3.07vh / 天数行 3.47vh，先收一档再 ×0.8 */
+    "  html body #mainPage.landscape .weather-now{ font-size:calc(4.64vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .weather-box{ font-size:calc(2.48vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .wrow{ font-size:calc(2.16vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .weather-days{ font-size:calc(2.32vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .weather-stale, html body #mainPage.landscape .wx-alert{ font-size:calc(2.08vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .wx-remind{ font-size:calc(2.56vh * var(--wbscale,1)) !important; }\n" +
+    /* 新闻：APK 标题 4.6vh / 日期 3.4vh，先收一档再 ×0.8 */
+    "  html body #mainPage.landscape .news-title{ font-size:calc(3.28vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .news-title.t-long{ font-size:calc(2.88vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .news-date{ font-size:calc(2.4vh * var(--wbscale,1)) !important; }\n" +
+    /* 诗歌：4.3vh × 0.8 */
+    "  html body #mainPage.landscape .poem-box{ font-size:calc(3.44vh * var(--wbscale,1)) !important; }\n" +
+    /* 日历：不钉字号！引擎 kdCalFit() 负责拟合（二分找最大字号 + 行距微调 +
+       "宁可字小也不裁末行"安全网）。但原版 .calendar th { height:34px } 是
+       固定像素：小屏卡片里表头吃掉约 1/4 高度，把拟合结果压得比 APK 比例小。
        这里把表头高度按 APK 比例（34px/825 ≈ 4.1vh）缩放，拟合空间就公平了。 */
     "  html body #mainPage.landscape .card-cal .calendar th{ height:calc(4.1vh * var(--wbscale,1)) !important; }\n" +
-    /* 新闻：APK 标题 4.6vh / 日期 3.4vh，各收一档 */
-    "  html body #mainPage.landscape .news-title{ font-size:calc(4.1vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .news-title.t-long{ font-size:calc(3.6vh * var(--wbscale,1)) !important; }\n" +
-    "  html body #mainPage.landscape .news-date{ font-size:calc(3vh * var(--wbscale,1)) !important; }\n" +
-    /* 诗歌 */
-    "  html body #mainPage.landscape .poem-box{ font-size:calc(4.3vh * var(--wbscale,1)) !important; }\n" +
-    "}\n";
+    /* 天气预报行防逐字堆叠保险：任何环境下都强制单行（宁可裁切不可竖排重叠） */
+    "  html body .wrow .wday, html body .wrow .wico, html body .wrow .wtxt, html body .wrow .wtemp{ white-space:nowrap !important; }\n";
   (document.head || document.documentElement).appendChild(st3);
+
+  /* ---- 3b) 底部四个按钮字号 ×0.8 ----
+   * 原版 #btnBar button 基准 calc(28px*var(--sys,1))，宽<900px 时 calc(22px*var(--sys,1))。
+   * 按用户要求整体缩到 0.8 倍：22.4px / 17.6px。用与原版相同的媒体条件保持一致。 */
+  var st4 = document.createElement("style");
+  st4.type = "text/css";
+  st4.textContent =
+    "html body #mainPage #btnBar button, html body #mainPage #btnBar .btn-music, html body #mainPage #btnBar .btn-radio, html body #mainPage #btnBar .btn-ai, html body #mainPage #btnBar .gear-btn{ font-size:calc(22.4px * var(--sys,1)) !important; }\n" +
+    "@media (max-width:900px){\n" +
+    "  html body #mainPage #btnBar button, html body #mainPage #btnBar .btn-music, html body #mainPage #btnBar .btn-radio, html body #mainPage #btnBar .btn-ai, html body #mainPage #btnBar .gear-btn{ font-size:calc(17.6px * var(--sys,1)) !important; }\n" +
+    "}\n";
+  (document.head || document.documentElement).appendChild(st4);
 
   /* --wbscale 跟随原版「主页缩放」设置（CFG.homeScale，%），让校准字号
      也服从用户的整体缩放；0/未设置 = 100%。轮询 + 钩子双保险。 */
