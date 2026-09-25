@@ -152,8 +152,39 @@
       el.className = (el.className ? el.className + " " : "") + "landscape";
     }
   }
+  /* ---- 按屏幕方向自适应版式 ----
+   * 原版支持竖屏（ROT=0 竖版式）与横屏（ROT=90 宽版式）两套布局。
+   * 此前垫片无条件强制横屏，手机竖着拿（宽高比 < 1）时就把横版版式
+   * 硬塞进竖屏视口 —— 时钟爆大、新闻列挤出屏外、诗歌被裁。
+   * 现在按视口方向分流：竖屏走原版竖版式（原样 applyRotation），
+   * 横屏才强制宽版。旋转手机时 resize/orientationchange 会重新分流。 */
+  var _origApplyRotation = window.applyRotation;   /* 原版函数（先存后覆盖） */
+  function isPortraitView() {
+    var w = window.innerWidth || 1, h = window.innerHeight || 1;
+    return h > w;
+  }
   /* 同名函数后定义者生效：覆盖 dashboard.html 内原本依赖 ROT 的 applyRotation */
-  window.applyRotation = function () { forceLandscape(); };
+  window.applyRotation = function () {
+    if (isPortraitView()) {
+      try { window.ROT = 0; } catch (e) {}
+      if (typeof _origApplyRotation === "function") {
+        try { _origApplyRotation(); } catch (eO) { forceLandscape(); }
+      } else {
+        forceLandscape();
+      }
+      /* 保险：竖屏时确保横屏标记被清掉（原版会清，这里兜底） */
+      try {
+        var _mp = document.getElementById("mainPage");
+        if (_mp) {
+          _mp.className = (" " + (_mp.className || "") + " ")
+            .replace(" landscape ", " ").replace(" rot-land ", " ")
+            .replace(/^\s+|\s+$/g, "");
+        }
+      } catch (eC) {}
+    } else {
+      forceLandscape();
+    }
+  };
 
   /* 抵消 .layout 自带的 rotate(-90deg) 对消(现在 #mainPage 不再 +90) */
   var st = document.createElement("style");
@@ -162,11 +193,11 @@
     "#mainPage.landscape .layout{ -webkit-transform:none !important; transform:none !important; }\n";
   (document.head || document.documentElement).appendChild(st);
 
-  /* boot 之后可能再跑一次 applyRotation，兜底重打 landscape 标记 */
+  /* boot 之后可能再跑一次 applyRotation，兜底按当前方向重打标记 */
   window.addEventListener("load", function () {
-    forceLandscape();
-    setTimeout(forceLandscape, 300);
-    setTimeout(forceLandscape, 1300);
+    try { window.applyRotation(); } catch (e) {}
+    setTimeout(function () { try { window.applyRotation(); } catch (e) {} }, 300);
+    setTimeout(function () { try { window.applyRotation(); } catch (e) {} }, 1300);
   });
 
   /* ================= v2 浏览器适配补丁 ================= */
@@ -179,9 +210,37 @@
   var _rzT = null;
   function refit() {
     try { window._bootK = 0; window._lockedK = 0; } catch (e) {}
-    try { if (typeof window.applyFit === "function") { window.applyFit(); } } catch (e) {}
-    try { forceLandscape(); } catch (e) {}
+    try { window.applyRotation(); } catch (e) {}
+    try { if (typeof window.applyFit === "function") { window.applyFit({ force: true }); } } catch (e) {}
     relayoutNewsColumn();
+  }
+  /* ---- 1c) 铺满保险（fitGuard） ----
+   * 桌面/仿真环境排版都精确贴合视口，但真机浏览器（字体放大、内核差异、
+   * 系统字号）可能让实际渲染超出屏幕 —— 用户只能看到页面的一部分。
+   * 这里在每轮排版后实测 document 的滚动尺寸：一旦真的超宽/超高，
+   * 就对 body 施加整体 zoom 等比收缩到正好放满；不再溢出时自动复原。
+   * zoom 是整页统一缩放，不破坏 APK 的相对比例。 */
+  function fitGuard() {
+    try {
+      var mp = document.getElementById("mainPage");
+      if (!mp || mp.style.display === "none") { return; }   /* 设置页打开时不动 */
+      var doc = document.documentElement, body = document.body;
+      if (!doc || !body) { return; }
+      var vw = window.innerWidth || doc.clientWidth, vh = window.innerHeight || doc.clientHeight;
+      var sw = Math.max(doc.scrollWidth || 0, body.scrollWidth || 0);
+      var sh = Math.max(doc.scrollHeight || 0, body.scrollHeight || 0);
+      var z = parseFloat(body.style.zoom) || 1;
+      var f = 1;
+      if (sw > vw + 2) { f = Math.min(f, (vw - 2) / sw); }
+      if (sh > vh + 2) { f = Math.min(f, (vh - 2) / sh); }
+      if (f < 0.98) {
+        var target = z * f;
+        if (target < 0.4) { target = 0.4; }
+        body.style.zoom = String(target);
+      } else if (z !== 1 && body.style.zoom) {
+        body.style.zoom = "";       /* 已不溢出 -> 撤掉缩放，恢复原生排版 */
+      }
+    } catch (e) {}
   }
   /* ---- 1b) 右栏新闻列重排 ----
    * .cr-wrap 是 display:table（height 相当于最小值，内容能撑破容器）。
@@ -207,9 +266,11 @@
         if (body) { body.style.display = prevD; body.style.overflow = prevO; }
         try { if (window.trimForecastToFit) { window.trimForecastToFit(); } } catch (e6) {}
       } catch (e0) {}
+      try { fitGuard(); } catch (eFg) {}
     };
     setTimeout(run, 60);     /* 等 fit CSS 生效后再量 */
     setTimeout(run, 420);    /* 二次保险（异步天气/新闻渲染可能又撑高） */
+    setTimeout(run, 1600);   /* 三次保险（字体放大/晚到的渲染） */
   }
   window.addEventListener("resize", function () {
     if (_rzT) { clearTimeout(_rzT); }
@@ -218,6 +279,14 @@
   window.addEventListener("orientationchange", function () {
     setTimeout(refit, 220);
   });
+  /* visualViewport：用户缩放/系统栏收展时也重排 */
+  try {
+    if (window.visualViewport && window.visualViewport.addEventListener) {
+      window.visualViewport.addEventListener("resize", function () {
+        setTimeout(refit, 150);
+      });
+    }
+  } catch (eVv) {}
 
   /* ---- 2) 桌面浏览器恢复设置页「原生滚动」 ----
    * 原版把 #settingsMask 及各清单盒强制 overflow:hidden + touch-action:none，
@@ -256,32 +325,51 @@
   st3.textContent =
     "@media (min-aspect-ratio: 3/2){\n" +
     /* 时钟：APK 21.0vh，略收 */
-    "  html body #mainPage.landscape #clockH, html body #mainPage.landscape #clockM{ font-size:20.5vh !important; letter-spacing:0.06em !important; }\n" +
-    "  html body #mainPage.landscape .date-line{ font-size:4.7vh !important; }\n" +
-    "  html body #mainPage.landscape .lunar-line{ font-size:4.4vh !important; }\n" +
+    "  html body #mainPage.landscape #clockH, html body #mainPage.landscape #clockM{ font-size:calc(20.5vh * var(--wbscale,1)) !important; letter-spacing:0.06em !important; }\n" +
+    "  html body #mainPage.landscape .date-line{ font-size:calc(4.7vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .lunar-line{ font-size:calc(4.4vh * var(--wbscale,1)) !important; }\n" +
     /* 天气：整体收一档（APK 实况 6.7vh / 盒 3.33vh / 预报行 3.07vh / 四日 3.47vh） */
-    "  html body #mainPage.landscape .weather-now{ font-size:5.8vh !important; }\n" +
-    "  html body #mainPage.landscape .weather-box{ font-size:3.1vh !important; }\n" +
-    "  html body #mainPage.landscape .wrow{ font-size:2.7vh !important; }\n" +
-    "  html body #mainPage.landscape .weather-days{ font-size:2.9vh !important; }\n" +
-    "  html body #mainPage.landscape .weather-stale, html body #mainPage.landscape .wx-alert{ font-size:2.6vh !important; }\n" +
-    "  html body #mainPage.landscape .wx-remind{ font-size:3.2vh !important; }\n" +
+    "  html body #mainPage.landscape .weather-now{ font-size:calc(5.8vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .weather-box{ font-size:calc(3.1vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .wrow{ font-size:calc(2.7vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .weather-days{ font-size:calc(2.9vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .weather-stale, html body #mainPage.landscape .wx-alert{ font-size:calc(2.6vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .wx-remind{ font-size:calc(3.2vh * var(--wbscale,1)) !important; }\n" +
     /* 日历：原引擎手机端 ~1.7vh 偏小，放大到 2.2vh（APK 布局可容纳）。
        注意：引擎的日历自适应逻辑会写 #topWrap .mid-row > .card-cal 前缀的
        !important 规则，特异性更高，这里必须用更深的路径压过它。 */
-    "  html body #mainPage.landscape .calendar, html body #mainPage.landscape .calendar table, html body #mainPage.landscape .calendar td .dnum{ font-size:2.2vh !important; }\n" +
-    "  html body #mainPage.landscape .calendar th{ font-size:1.9vh !important; }\n" +
-    "  html body #mainPage.landscape .calendar td .dsub{ font-size:1.35vh !important; }\n" +
+    "  html body #mainPage.landscape .calendar, html body #mainPage.landscape .calendar table, html body #mainPage.landscape .calendar td .dnum{ font-size:calc(2.2vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .calendar th{ font-size:calc(1.9vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .calendar td .dsub{ font-size:calc(1.35vh * var(--wbscale,1)) !important; }\n" +
     "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar table,\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dnum{ font-size:2.2vh !important; }\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar th{ font-size:1.9vh !important; }\n" +
-    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dsub{ font-size:1.35vh !important; }\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dnum{ font-size:calc(2.2vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar th{ font-size:calc(1.9vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dsub{ font-size:calc(1.35vh * var(--wbscale,1)) !important; }\n" +
     /* 新闻：APK 标题 4.6vh / 日期 3.4vh，各收一档 */
-    "  html body #mainPage.landscape .news-title{ font-size:4.1vh !important; }\n" +
-    "  html body #mainPage.landscape .news-title.t-long{ font-size:3.6vh !important; }\n" +
-    "  html body #mainPage.landscape .news-date{ font-size:3vh !important; }\n" +
+    "  html body #mainPage.landscape .news-title{ font-size:calc(4.1vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .news-title.t-long{ font-size:calc(3.6vh * var(--wbscale,1)) !important; }\n" +
+    "  html body #mainPage.landscape .news-date{ font-size:calc(3vh * var(--wbscale,1)) !important; }\n" +
     /* 诗歌 */
-    "  html body #mainPage.landscape .poem-box{ font-size:4.3vh !important; }\n" +
+    "  html body #mainPage.landscape .poem-box{ font-size:calc(4.3vh * var(--wbscale,1)) !important; }\n" +
     "}\n";
   (document.head || document.documentElement).appendChild(st3);
+
+  /* --wbscale 跟随原版「主页缩放」设置（CFG.homeScale，%），让校准字号
+     也服从用户的整体缩放；0/未设置 = 100%。轮询 + 钩子双保险。 */
+  function wbScaleUpdate() {
+    try {
+      var hs = 100, c = window.CFG;
+      if (c && c.homeScale && c.homeScale > 0) { hs = c.homeScale; }
+      document.documentElement.style.setProperty("--wbscale", String(hs / 100));
+    } catch (e) {}
+  }
+  try {
+    var _origHomeScale = window.onHomeScaleChange;
+    window.onHomeScaleChange = function () {
+      if (typeof _origHomeScale === "function") { try { _origHomeScale(); } catch (e0) {} }
+      wbScaleUpdate();
+    };
+  } catch (eHs) {}
+  setInterval(wbScaleUpdate, 1200);
+  window.addEventListener("load", wbScaleUpdate);
 })();
