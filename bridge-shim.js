@@ -241,4 +241,47 @@
     "  html body #settingsMask::-webkit-scrollbar-track{ background:transparent; }\n" +
     "}\n";
   (document.head || document.documentElement).appendChild(st2);
+
+  /* ---- 3) 宽屏视口的「APK 比例字号校准」 ----
+   * 原版字号的相对比例是在 1200x825（宽高比 1.45:1）的 H9 墨水屏上调好的。
+   * 手机横屏（宽高比普遍 2:1 以上）下列宽随视口横向拉伸，而字号仍按"高度-derived k"
+   * 缩放，于是：时钟贴满被拉宽的左栏 -> 偏大；新闻/天气被"填满高度"逻辑放大 -> 偏大；
+   * 日历相对反而显小。这里在宽横屏（aspect-ratio >= 3:2）下，按 APK 参考视口实测的
+   * vh 比例钉住各板块字号（!important 盖过引擎随时重写的内联样式）：
+   *   APK 实测(1200x825)：时钟 21.0vh、日期 4.75vh、天气实况 6.7vh、天气盒 3.33vh、
+   *   预报行 3.07vh、日历数字 1.82vh、新闻标题 4.6vh、新闻日期 3.4vh、诗歌 5.0vh。
+   * 结合用户反馈微调：时钟/天气/新闻各收一档，日历放大。 */
+  var st3 = document.createElement("style");
+  st3.type = "text/css";
+  st3.textContent =
+    "@media (min-aspect-ratio: 3/2){\n" +
+    /* 时钟：APK 21.0vh，略收 */
+    "  html body #mainPage.landscape #clockH, html body #mainPage.landscape #clockM{ font-size:20.5vh !important; letter-spacing:0.06em !important; }\n" +
+    "  html body #mainPage.landscape .date-line{ font-size:4.7vh !important; }\n" +
+    "  html body #mainPage.landscape .lunar-line{ font-size:4.4vh !important; }\n" +
+    /* 天气：整体收一档（APK 实况 6.7vh / 盒 3.33vh / 预报行 3.07vh / 四日 3.47vh） */
+    "  html body #mainPage.landscape .weather-now{ font-size:5.8vh !important; }\n" +
+    "  html body #mainPage.landscape .weather-box{ font-size:3.1vh !important; }\n" +
+    "  html body #mainPage.landscape .wrow{ font-size:2.7vh !important; }\n" +
+    "  html body #mainPage.landscape .weather-days{ font-size:2.9vh !important; }\n" +
+    "  html body #mainPage.landscape .weather-stale, html body #mainPage.landscape .wx-alert{ font-size:2.6vh !important; }\n" +
+    "  html body #mainPage.landscape .wx-remind{ font-size:3.2vh !important; }\n" +
+    /* 日历：原引擎手机端 ~1.7vh 偏小，放大到 2.2vh（APK 布局可容纳）。
+       注意：引擎的日历自适应逻辑会写 #topWrap .mid-row > .card-cal 前缀的
+       !important 规则，特异性更高，这里必须用更深的路径压过它。 */
+    "  html body #mainPage.landscape .calendar, html body #mainPage.landscape .calendar table, html body #mainPage.landscape .calendar td .dnum{ font-size:2.2vh !important; }\n" +
+    "  html body #mainPage.landscape .calendar th{ font-size:1.9vh !important; }\n" +
+    "  html body #mainPage.landscape .calendar td .dsub{ font-size:1.35vh !important; }\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar table,\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dnum{ font-size:2.2vh !important; }\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar th{ font-size:1.9vh !important; }\n" +
+    "  html body #mainPage.landscape #topWrap .mid-row > .card-cal .calendar td .dsub{ font-size:1.35vh !important; }\n" +
+    /* 新闻：APK 标题 4.6vh / 日期 3.4vh，各收一档 */
+    "  html body #mainPage.landscape .news-title{ font-size:4.1vh !important; }\n" +
+    "  html body #mainPage.landscape .news-title.t-long{ font-size:3.6vh !important; }\n" +
+    "  html body #mainPage.landscape .news-date{ font-size:3vh !important; }\n" +
+    /* 诗歌 */
+    "  html body #mainPage.landscape .poem-box{ font-size:4.3vh !important; }\n" +
+    "}\n";
+  (document.head || document.documentElement).appendChild(st3);
 })();
