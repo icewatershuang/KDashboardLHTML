@@ -962,6 +962,8 @@
     var h = "";
     try { h = _origMuSurfaceHTML ? _origMuSurfaceHTML(ns) : ""; } catch (e) { h = ""; }
     if (!h) { return h; }
+    /* 选过文件夹但还没重新授权（刷新过页面）时，把这一步做成醒目的一行 */
+    var needRepick = wbHasLib() && !WB.ready;
     var block =
       '<div class="mu-sec-title">⓪ 本机音乐文件夹（浏览器版）</div>' +
       '<div class="mu-row">' +
@@ -969,7 +971,11 @@
       '<button class="mu-btn" onclick="wbPickFiles(); return false;">选择音频文件</button>' +
       '<button class="mu-btn" onclick="wbClearResume(); return false;">清除续播记忆</button>' +
       "</div>" +
-      '<div class="mu-hint">浏览器读不到设备目录，需由你在这里指定一次：点【选择音乐文件夹】选中放音乐的文件夹（会连带子文件夹一起收进曲库）；iPhone/不支持目录选择时用【选择音频文件】多选。曲目名会记住，下次打开只要再选同一个文件夹就能接着上次的位置播。</div>' +
+      '<div class="mu-hint">' +
+      (needRepick
+        ? '<b>上次的音乐文件夹还记得，但浏览器不保存文件本体 —— 点一下【选择音乐文件夹】重新选中同一个文件夹，就会从上次没播完的那首接着播。</b>'
+        : '浏览器读不到设备目录，需由你在这里指定一次：点【选择音乐文件夹】选中电脑上放音乐的文件夹（会连带子文件夹一起收进曲库）；不支持目录选择时用【选择音频文件】多选。曲目名会记住，下次打开只要再选同一个文件夹就能接着上次的位置播。') +
+      "</div>" +
       '<div class="mu-cur j-wb-lib"></div>';
     try {
       if (h.indexOf('<div class="mu-sec-title">②') >= 0) {
@@ -1004,4 +1010,268 @@
     setTimeout(syncWeatherCard, 900);
     setTimeout(syncWeatherCard, 2000);
   });
+
+  /* =======================================================================
+     5) 收音机（RADIO）—— 让"点了有反应、播不了有提示、能自愈"
+     -----------------------------------------------------------------------
+     原版这一块本身没坏：radioPlay() 建 <audio>、radioPlaying() 判断状态都正常。
+     真正的问题是「静默失败」——三种典型场景用户都得不到任何反馈：
+
+       a) 选到死台/被墙的台：audio 触发 error(code 4)，但代码里 p.catch 是空的，
+          按钮却已经被写成 class="btn-radio on"（亮着＝在播），于是"点了没声"。
+       b) 用户机器上浏览器禁止无手势自动播放：play() 被静默拒绝，
+          同样没有任何提示。
+       c) 是 http 明文台 + 页面跑在 https 上：直接被 mixed-content 拦掉。
+
+     本段做四件事：
+       ① 给 radioPlay 的 play() 补 catch -> 明确提示（自动播放被拦 / 加载失败）
+       ② 给 <audio> 挂 error / stalled / playing 监听 -> 失败翻牌 + 提示，
+          成功才把按钮点成"在播"，不再出现"亮着但不响"
+       ③ 死台自动跳到同清单里的下一个（最多试 3 个），用内联提示告知
+       ④ 页面若在 https 下而电台是 http，提前提示并列出可用的 https 台
+     ======================================================================= */
+  var _rdBadTried = {};      /* 本次运行已判定播不了的 url，避免来回重试 */
+  var _rdFailCnt = 0;
+  var _rdCurName = "";
+
+  function rdNotice(msg, ms) {
+    try { if (window.kdToast) { window.kdToast(msg, ms || 6000); return; } } catch (e) {}
+    try {
+      var box = document.getElementById("aiQuick");
+      if (box) { box.style.display = "block"; box.textContent = msg;
+                 setTimeout(function () { try { box.style.display = "none"; } catch (e2) {} }, ms || 6000); }
+    } catch (e) {}
+  }
+  /* 按钮状态只有「真的在出声」才允许是 on */
+  function rdSetBtn(on, pause) {
+    try {
+      var br = document.getElementById("btnRadio");
+      if (!br) { return; }
+      br.className = on ? (pause ? "btn-radio pause" : "btn-radio on") : "btn-radio";
+    } catch (e) {}
+  }
+  function rdIsHttpsPage() {
+    try { return location.protocol === "https:"; } catch (e) { return false; }
+  }
+  function rdIsHttpUrl(u) { return /^http:\/\//i.test(String(u || "")); }
+
+  /* 从「我的电台 + 预设库」里挑一个能用的候选（优先 https） */
+  function rdCandidates(exceptUrl) {
+    var out = [], i, seen = {}, arr;
+    try { arr = (window.radioMyList ? window.radioMyList() : []) || []; } catch (e) { arr = []; }
+    var pools = [arr];
+    try { if (window.radioPresetAll) { pools.push(window.radioPresetAll() || []); } } catch (e2) {}
+    for (var p = 0; p < pools.length; p++) {
+      for (i = 0; i < pools[p].length; i++) {
+        var u = pools[p][i] && pools[p][i].url;
+        if (!u || u === exceptUrl || seen[u] || _rdBadTried[u]) { continue; }
+        if (rdIsHttpsPage() && rdIsHttpUrl(u)) { continue; }   /* https 页面放不了 http 流 */
+        seen[u] = 1;
+        out.push(pools[p][i]);
+      }
+    }
+    /* https 台排前面 */
+    out.sort(function (a, b) {
+      var sa = rdIsHttpUrl(a.url) ? 1 : 0, sb = rdIsHttpUrl(b.url) ? 1 : 0;
+      return sa - sb;
+    });
+    return out;
+  }
+
+  /* 死台 -> 顺着清单试下一个 */
+  function rdTryNext(reason) {
+    var cur = window._radioCurUrl || "";
+    _rdBadTried[cur] = 1;
+    _rdFailCnt++;
+    if (_rdFailCnt > 3) {
+      rdSetBtn(false);
+      rdNotice("连续几个电台都放不出来（" + reason + "）。请到【设置 → 智能与媒体 → 电台】换一个台，或用【新增电台】填一个能用的 http(s) 地址。", 9000);
+      try { window.radioStop(); } catch (e) {}
+      _rdFailCnt = 0;
+      return;
+    }
+    var cands = rdCandidates(cur), i, pick = null;
+    for (i = 0; i < cands.length; i++) {
+      if (/\b[国内|中国|CNR|CRI|CCTV|中央|北京|上海|广东]/.test(cands[i].name) || !rdIsHttpUrl(cands[i].url)) { pick = cands[i]; break; }
+    }
+    if (!pick) { pick = cands[0]; }
+    if (!pick) {
+      rdSetBtn(false);
+      rdNotice("这个电台播不出来：" + (reason || "地址失效") + "。到【设置 → 电台】里换一个台。", 9000);
+      try { window.radioStop(); } catch (e2) {}
+      _rdFailCnt = 0;
+      return;
+    }
+    rdNotice("《" + (_rdCurName || "上一个台") + "》播不了（" + reason + "），自动换到《" + pick.name + "》…", 6000);
+    try { window.radioPlay(pick.url, pick.name); } catch (e3) {}
+  }
+
+  /* 挂监听（只挂一次）：失败翻牌 + 成功点亮 */
+  function rdHookAudio() {
+    try {
+      var a = window.radioAudioEl ? window.radioAudioEl() : document.getElementById("radioAudio");
+      if (!a || a.__wbRadioHooked) { return; }
+      a.__wbRadioHooked = true;
+
+      a.addEventListener("playing", function () {
+        _rdFailCnt = 0;
+        rdSetBtn(true, false);
+        try { if (a.__wbBad) { delete a.__wbBad; } } catch (e) {}
+      }, false);
+
+      a.addEventListener("error", function () {
+        var code = a.error ? a.error.code : 0;
+        a.__wbBad = true;
+        var reason = (code === 4 || code === 3) ? "地址失效或格式不支持"
+                   : (code === 2) ? "网络中断"
+                   : (code === 1) ? "播放被中断" : "加载失败";
+        if (rdIsHttpsPage() && rdIsHttpUrl(a.src || window._radioCurUrl)) {
+          reason = "本站是 https，浏览器禁止加载 http 明文电台";
+        }
+        rdTryNext(reason);
+      }, false);
+
+      /* 长时间没有任何数据 -> 当作死台（直播流常见：连上了但一直没音频） */
+      a.addEventListener("stalled", function () {
+        setTimeout(function () {
+          if (a.paused || a.readyState < 2) {
+            try { if (window.radioPlaying && !window.radioPlaying()) { return; } } catch (e0) {}
+          }
+        }, 100);
+      }, false);
+
+      a.addEventListener("pause", function () {
+        if (!a.ended) { rdSetBtn(false); }
+      }, false);
+    } catch (e) {}
+  }
+
+  /* 覆盖 radioPlay：补 play() 的 catch + 记录台名 + 挂监听 + 超时兜底 */
+  var _origRadioPlay = window.radioPlay;
+  window.radioPlay = function (url, name) {
+    _rdCurName = name || "";
+    if (rdIsHttpsPage() && rdIsHttpUrl(url)) {
+      rdNotice("《" + (name || url) + "》是 http 明文地址，当前页面是 https，浏览器会拦掉。请换一个 https 的台。", 9000);
+      /* 仍然试一次，失败链路会走到 error -> rdTryNext */
+    }
+    try { if (_origRadioPlay) { _origRadioPlay(url, name); } } catch (e) {}
+
+    /* 挂监听（audio 刚被创建出来） */
+    setTimeout(function () {
+      rdHookAudio();
+      var a = document.getElementById("radioAudio");
+      if (!a) { return; }
+      /* 覆盖这次 play() 的空 catch：重新 play 一遍以拿到 promise */
+      try {
+        var p = a.play();
+        if (p && p.catch) {
+          p.catch(function (err) {
+            var m = String((err && err.name) || "");
+            if (/NotAllowed/i.test(m)) {
+              rdSetBtn(false);
+              rdNotice("浏览器拦截了自动播放 —— 请再点一次主页【RADIO】按钮（浏览器要求由你的点击来启动声音）。", 8000);
+            } else {
+              a.__wbBad = true;
+              rdTryNext("播放被拒绝");
+            }
+          });
+        }
+      } catch (e2) {}
+    }, 50);
+
+    /* 超时兜底：6 秒还没开始出声就当失败 */
+    setTimeout(function () {
+      try {
+        var a = document.getElementById("radioAudio");
+        if (!a) { return; }
+        if (a.__wbRadioTimeout) { clearTimeout(a.__wbRadioTimeout); }
+        a.__wbRadioTimeout = setTimeout(function () {
+          if (window._radioCurUrl !== url) { return; }          /* 已经换台了，忽略 */
+          if (!a.paused && a.readyState >= 2) { return; }        /* 在播，正常 */
+          if (a.__wbBad) { return; }                             /* 已由 error 处理 */
+          a.__wbBad = true;
+          rdTryNext("等不到音频数据（可能是死链或被墙）");
+        }, 6000);
+      } catch (e4) {}
+    }, 0);
+  };
+
+  /* 覆盖 radioQuickPlay：没设最爱时给明确指引，而不是一句 alert */
+  var _origRadioQuickPlay = window.radioQuickPlay;
+  window.radioQuickPlay = function () {
+    var a = window.radioAudioEl ? window.radioAudioEl() : null;
+    if (a && !a.paused) { rdSetBtn(true, true); }
+    var target = null;
+    try { if (window.radioTarget) { target = window.radioTarget(); } } catch (e) {}
+    if (!target) {
+      rdSetBtn(false);
+      rdNotice("还没选电台。打开【设置 → 智能与媒体 → 电台 Radio】，在列表里点一下台名设为最喜爱，之后主页点 RADIO 就能播。", 9000);
+      return;
+    }
+    _rdFailCnt = 0;
+    _rdCurName = target.name || "";
+    try { if (_origRadioQuickPlay) { _origRadioQuickPlay(); } } catch (e2) {}
+    setTimeout(rdHookAudio, 60);
+    /* 若 3 秒后仍没声音，明确告诉用户点哪儿 */
+    setTimeout(function () {
+      try {
+        var el = document.getElementById("radioAudio");
+        if (!el) { return; }
+        if (el.paused && el.readyState < 2 && !el.__wbBad) {
+          rdSetBtn(false);
+          rdNotice("《" + (_rdCurName || "该电台") + "》还没有声音 —— 浏览器可能要求再点一次【RADIO】才开始播放。", 8000);
+        }
+      } catch (e3) {}
+    }, 3000);
+  };
+
+  /* 启动时挂一次监听（页面自带 radioAudio 时） */
+  window.addEventListener("load", function () {
+    setTimeout(rdHookAudio, 1200);
+    setTimeout(rdHookAudio, 3000);
+    /* 首次使用时：默认最爱是美国的 WLTW（http，国内多数网络/被墙，且 https 页面会被拦），
+       直接换成国内可用的 https 台，免得用户第一次点 RADIO 就是"没声音"。
+       只在用户「从未自己改过」时替换，改过的不动。 */
+    setTimeout(function () {
+      try {
+        if (localStorage.getItem("kd_radio_default_fixed_v2")) { return; }
+        var r = (window.CFG && window.CFG.radio) || null;
+        if (!r || !r.favorite || !r.favorite.url) { return; }
+        var u = String(r.favorite.url);
+        if (u.indexOf("revma.ihrhls.com") < 0 && u.indexOf("npr-ice.streamguys1.com") < 0) {
+          localStorage.setItem("kd_radio_default_fixed_v2", "1");
+          return;
+        }
+        r.favorite = { name: "CNR-1 中国之声", url: "https://lhttp.qtfm.cn/live/15318317/64k.mp3" };
+        /* 清单里那两个 http 境外台换成 https 的国内台 */
+        var swap = {
+          "http://stream.revma.ihrhls.com/zc1477": { name: "CNR-1 中国之声", url: "https://lhttp.qtfm.cn/live/15318317/64k.mp3" },
+          "http://npr-ice.streamguys1.com/live.mp3": { name: "CRI 环球资讯广播", url: "https://sk.cri.cn/905.m3u8" },
+          "http://sk.cri.cn/am846.m3u8": { name: "广东音乐之声", url: "https://lhttp.qtfm.cn/live/1260/64k.mp3" }
+        };
+        var L = r.myList || [], i, t;
+        for (i = 0; i < L.length; i++) {
+          t = swap[L[i].url];
+          if (t) { L[i].name = t.name; L[i].url = t.url; }
+        }
+        try { if (window.saveConfig) { window.saveConfig(); } } catch (e0) {}
+        localStorage.setItem("kd_radio_default_fixed_v2", "1");
+        try { if (window.radioSyncFavUI) { window.radioSyncFavUI(); } } catch (e1) {}
+        try { if (window.radioMyRender) { window.radioMyRender(); window.radioMyRender("radioMyListS"); } } catch (e2) {}
+      } catch (e) {}
+    }, 1500);
+  });
+
+  /* 设置页里的收音机提示条：把 live 状态写出来，代替原来没有反馈的静默 */
+  var _origRadioSyncFavUI = window.radioSyncFavUI;
+  window.radioSyncFavUI = function () {
+    try { if (_origRadioSyncFavUI) { _origRadioSyncFavUI(); } } catch (e) {}
+    try {
+      var fav = (window.CFG && window.CFG.radio && window.CFG.radio.favorite) || null;
+      var box = document.getElementById("radioNow");
+      if (box && !fav) {
+        box.innerHTML = "最喜爱：无 —— 请在下面列表里点一下台名来设定（点台名 = 设为最喜爱并试听）";
+      }
+    } catch (e2) {}
+  };
 })();
