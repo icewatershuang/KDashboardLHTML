@@ -265,6 +265,7 @@
         try { if (window.refreshPageInfo) { window.refreshPageInfo(); } } catch (e5) {}
         if (body) { body.style.display = prevD; body.style.overflow = prevO; }
         try { if (window.trimForecastToFit) { window.trimForecastToFit(); } } catch (e6) {}
+        try { syncWeatherCard(); } catch (eW) {}
       } catch (e0) {}
       try { fitGuard(); } catch (eFg) {}
     };
@@ -387,4 +388,100 @@
   } catch (eHs) {}
   setInterval(wbScaleUpdate, 1200);
   window.addEventListener("load", wbScaleUpdate);
+
+  /* ---- 4) 天气板块：面积固定、与日历上下齐平、预报行纵向等分 ----
+   * 原版横屏逻辑 applyLandscapeSizes() 会按「首次测算冻结」的 CFG.lsSizes 给
+   * .card-weather 写一个固定内联高度（与日历卡无关），实测总比日历卡矮一截
+   * （915x412 下日历 133px vs 天气 101px），底部参差不齐；预报行虽然已是
+   * flex:1 等分，但盒子矮，7 天预报挤在一起。
+   * 修复：
+   *   a) 同步天气卡高度 = 日历卡实测高度（两者同在 .mid-row 一行、顶边已齐，
+   *      高度对齐后上下端自然齐平），并压掉原版冻结的内联高度；
+   *   b) #weatherBox 撑满天气卡，.wrow 全部 flex:1 1 0 + min-height:0 ——
+   *      剩余纵向空间被 7 天预报行严格均分（引擎 V30 起已把 fitForecastDays
+   *      置为空操作、行本就 flex 等分，这里补上 CSS 保险确保任何时序都成立）；
+   *   c) 钩住 applyLandscapeSizes / renderWeather，并在 refit 与 1s 轮询里
+   *      持续同步，任何时序（字体加载、日历拟合、窗口变化）下都不回退。 */
+  var st5 = document.createElement("style");
+  st5.type = "text/css";
+  st5.textContent =
+    "html body .mid-row{ -webkit-align-items:stretch !important; align-items:stretch !important; }\n" +
+    "html body .card-weather{ display:flex !important; -webkit-flex-direction:column !important; flex-direction:column !important; min-height:0 !important; overflow:hidden !important; }\n" +
+    "html body .card-weather #weatherBox{ display:flex !important; -webkit-flex-direction:column !important; flex-direction:column !important; -webkit-box-flex:1 !important; -webkit-flex:1 1 auto !important; flex:1 1 auto !important; min-height:0 !important; }\n" +
+    "html body .card-weather #weatherBox > .weather-now{ -webkit-flex:0 0 auto !important; flex:0 0 auto !important; }\n" +
+    "html body .card-weather #weatherBox > .weather-stale{ -webkit-flex:0 0 auto !important; flex:0 0 auto !important; }\n" +
+    "html body .card-weather #weatherBox > .wrow{ display:block !important; -webkit-box-flex:1 !important; -webkit-flex:1 1 0 !important; flex:1 1 0 !important; min-height:0 !important; overflow:hidden !important; }\n";
+  (document.head || document.documentElement).appendChild(st5);
+
+  function syncWeatherCard() {
+    try {
+      var mp = document.getElementById("mainPage");
+      if (!mp || mp.style.display === "none") { return; }   /* 设置页打开时不动 */
+      var cal = mp.querySelector(".card-cal");
+      var wx = mp.querySelector(".card-weather");
+      if (!cal || !wx) { return; }
+      if (cal.parentElement !== wx.parentElement) { return; }  /* 只处理同一行内的兄弟卡 */
+      var h = cal.getBoundingClientRect().height;
+      if (!h || h < 10) { return; }
+      var cur = parseFloat(wx.style.height) || 0;
+      if (Math.abs(cur - h) > 0.5) {
+        wx.style.height = h + "px";        /* 压掉原版冻结高度，改为与日历等高 */
+        /* 高度变化后行高重排，宽度自适应字号重跑一次 */
+        try { if (window.fitWeatherRows) { window.fitWeatherRows(); } } catch (eFr) {}
+      }
+      if (wx.style.minHeight !== "0px") { wx.style.minHeight = "0px"; }
+      if (wx.style.maxHeight && wx.style.maxHeight !== "none") { wx.style.maxHeight = "none"; }
+      /* 行数保险：预报行若被任何旧版裁行/快照逻辑删掉（少于可用天数），
+         按 _fcAll 全量补回 —— flex 等分下多行永远不会溢出，补回是无损的。 */
+      try {
+        var wbox = document.getElementById("weatherBox");
+        var all = window._fcAll;
+        if (wbox && all && all.length) {
+          var want = all.length;
+          try {
+            if (typeof window.fcDays === "function") {
+              var fd = window.fcDays();
+              if (fd > 0 && fd < want) { want = fd; }
+            }
+          } catch (eFd) {}
+          var rowsEl = wbox.getElementsByClassName("wrow");
+          if (rowsEl.length && rowsEl.length < want) {
+            try { if (typeof window.fcSetRows === "function") { window.fcSetRows(want); } } catch (eSr) {}
+          }
+        }
+      } catch (eRows) {}
+    } catch (e) {}
+  }
+  window.syncWeatherCard = syncWeatherCard;   /* 供控制台/探针调用 */
+
+  /* 钩住原版「横屏冻结尺寸」：先让它写完，再用日历实测高覆盖 */
+  try {
+    var _origALS = window.applyLandscapeSizes;
+    if (typeof _origALS === "function") {
+      window.applyLandscapeSizes = function (k) {
+        try { _origALS(k); } catch (e0) {}
+        setTimeout(syncWeatherCard, 0);
+        setTimeout(syncWeatherCard, 150);
+      };
+    }
+  } catch (eAls) {}
+  /* 钩住天气渲染：实况行(.weather-now)高度可能变化，渲染后重新对齐 */
+  try {
+    var _origRW = window.renderWeather;
+    if (typeof _origRW === "function") {
+      window.renderWeather = function (ts) {
+        var r = _origRW(ts);
+        setTimeout(syncWeatherCard, 0);
+        setTimeout(syncWeatherCard, 250);
+        return r;
+      };
+    }
+  } catch (eRw) {}
+  /* 兜底轮询：字体/异步渲染晚到导致日历卡高度变化时也能跟上 */
+  setInterval(syncWeatherCard, 1000);
+  window.addEventListener("load", function () {
+    setTimeout(syncWeatherCard, 300);
+    setTimeout(syncWeatherCard, 900);
+    setTimeout(syncWeatherCard, 2000);
+  });
 })();
