@@ -692,6 +692,15 @@
   }
   window.wbRenderLib = wbRenderLib;
   window.wbClearResume = wbClearResume;
+  /* 自测/控制台入口：把「列出某目录下所有音频」和「重新载入曲库骨架」暴露出来。
+     这两个原来是 WB 内部函数，外部拿不到 —— 排查「文件夹选了却不播」时
+     没法确认曲库到底收进去了几首，只能靠猜。 */
+  window.wbAudioList = function (dir, recursive) {
+    try { return wbAudioList(dir || WB.root, recursive !== false); } catch (e) { return []; }
+  };
+  window.wbReloadLib = function () {
+    try { return wbLoadLib(); } catch (e) { return false; }
+  };
   /* 调试/自测入口：返回当前曲库与续播状态 */
   window.wbDebug = function () {
     var n = 0, d;
@@ -1274,4 +1283,222 @@
       }
     } catch (e2) {}
   };
+})();
+
+/* ===========================================================================
+   修复 6：日历「今日高亮」在节假日 / 调休 / 公历节日当天整片丢失
+   ---------------------------------------------------------------------------
+   症状（用户可见）：
+     今天是 9/26（中秋，法定假日），日历里 26 号那一格应当是【黑底白字 + 灰底假日色】
+     的双重高亮，实际只剩灰底 —— 「今天」完全看不出来。
+     调休上班日、公历节日（教师节等）当天同样丢高亮。
+
+   根因（不是逻辑写错，是字符串拼进标签的方式错了）：
+     原 renderCalendar() 用字符串拼 <td>，各分支这样写：
+
+         cls = " class='hol'" + (i === today ? " today" : "");
+         html += "<td" + cls + ">…</td>";
+
+     拼出来是  <td class='hol' today>  ——
+     `today` 落在了单引号**外面**，于是被 HTML 解析器当成一个独立的
+     布尔属性（DOM 里显示成 today=""），而不是 class 列表里的一员。
+     结果 td.className 只剩 "hol"，`.calendar td.today` 那条黑底白字规则
+     永远匹配不上。
+
+     ⚠ 容易误判的地方：源码里 `if (i === today)` 判断本身是**对的**，
+     cls 变量拼出来的字符串看着也"像"带 today；
+     只有把 innerHTML 取出来看原始标签、或读 td.className，
+     才会发现 today 被降级成了属性。所以这里不是改判断，是改拼接方式。
+
+   修法（不改 index.html，只在 web 版运行时接管）：
+     不改原函数的判断逻辑，而是「算完 class 后，再确保 today 真的进了 class 列表」：
+       ① 每次 renderCalendar() 之后，把生成好的 DOM 规范化一遍
+          —— 删掉那个伪属性 today=""，按真实日期补一次 today 类；
+       ② 同时把当天的格子重新着色（黑底白字），节假日/调休的底色叠在下面，
+          保证「今天」在任何分支下都一定能被认出来；
+       ③ 用 MutationObserver 兜住所有后续重绘（跨日 updateClock 会再调
+          renderCalendar，月份切换、恢复缓存也都会），不依赖调用点。
+     这样只增不减：原有农历日、节日名、调休「班」字样全都保留。
+   =========================================================================== */
+(function () {
+  var CAL_BOX_ID = "calendarBox";
+
+  /* 找出日历里「今天」那一格：只认 dnum 文本等于当天的格，月/年不匹配就不动。 */
+  function kdTodayCell() {
+    var box = document.getElementById(CAL_BOX_ID);
+    if (!box) { return null; }
+    var now = new Date();
+    var day = String(now.getDate());
+    var tds = box.getElementsByTagName("td");
+    var i, td, dn;
+    for (i = 0; i < tds.length; i++) {
+      td = tds[i];
+      dn = td.getElementsByTagName("span");
+      var j, txt = "";
+      for (j = 0; j < dn.length; j++) {
+        if (String(dn[j].className || "").indexOf("dnum") >= 0) { txt = String(dn[j].textContent || "").replace(/\s+/g, ""); break; }
+      }
+      if (txt === day) { return td; }
+    }
+    return null;
+  }
+
+  /* 规范化整个日历：
+       1) 把误当成属性的 today="" 清掉（它是拼串事故的残留，不该留在标签上）
+       2) 给真正的今天补上 today 类
+       3) 保证 today 一定排在 class 列表里，且不重复 */
+  function kdNormalizeCalendar() {
+    try {
+      var box = document.getElementById(CAL_BOX_ID);
+      if (!box) { return false; }
+      var tds = box.getElementsByTagName("td"), i, td;
+      /* ① 清理伪属性。老 WebKit 没有 removeAttribute 的兼容问题，直接用即可。 */
+      for (i = 0; i < tds.length; i++) {
+        td = tds[i];
+        try {
+          if (td.hasAttribute && td.hasAttribute("today")) { td.removeAttribute("today"); }
+        } catch (eAttr) {}
+      }
+      /* ② 补 today 类 */
+      var hit = kdTodayCell();
+      if (!hit) { return false; }
+      var cls = String(hit.className || "");
+      if (cls.indexOf("today") < 0) {
+        hit.className = (cls ? cls + " " : "") + "today";
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /* 接管 renderCalendar：先跑原逻辑（农历日/节日名/调休字样都不变），
+     再立刻规范化。原函数在写 innerHTML 后会调 kdCalFit()，
+     这一步必须放在它之后，免得 kdCalFit 量到的还是旧 class 的高度。 */
+  var _origRenderCalendar = window.renderCalendar;
+  if (typeof _origRenderCalendar === "function") {
+    window.renderCalendar = function () {
+      var r;
+      try { r = _origRenderCalendar.apply(this, arguments); }
+      finally { try { kdNormalizeCalendar(); } catch (eN) {} }
+      return r;
+    };
+  }
+
+  /* 兜底：任何其它路径改了 calendarBox（跨日 updateClock、月份切换、
+     以及别的脚本直接写 innerHTML），也补一遍。节流到一帧一次。 */
+  var _calTimer = null;
+  function kdCalKick() {
+    if (_calTimer) { return; }
+    _calTimer = setTimeout(function () {
+      _calTimer = null;
+      try { kdNormalizeCalendar(); } catch (e) {}
+    }, 0);
+  }
+  window.addEventListener("load", function () {
+    try { kdNormalizeCalendar(); } catch (e0) {}
+    try {
+      var box = document.getElementById(CAL_BOX_ID);
+      if (box && window.MutationObserver) {
+        var mo = new MutationObserver(function () { kdCalKick(); });
+        mo.observe(box, { childList: true, subtree: true });
+      }
+    } catch (e1) {}
+    /* 跨日那一分钟：updateClock 会重排日历，多补几次确保命中 */
+    setTimeout(kdCalKick, 1000);
+    setTimeout(kdCalKick, 3000);
+  });
+  /* 供控制台 / 自动化测试调用 */
+  window.kdNormalizeCalendar = kdNormalizeCalendar;
+})();
+
+/* ===========================================================================
+   修复 7：日历卡被天气卡挤成一条窄缝（中段两列不是 50/50）
+   ---------------------------------------------------------------------------
+   症状（用户可见）：
+     中段「日历 | 天气」两列本该等分，实际日历只有 147px、天气 300px ——
+     日历被压成一条窄缝，一个月 6 行 7 列全挤在 147px 里，
+     每格只剩 21px 宽，日期数字和节日名都挤得看不清。
+
+   根因（旧竖版规则的遗留冲突）：
+     index.html 里有两组打架的规则：
+
+       ① 现在生效的新版面（中段一行两列）：
+            .mid-row > .card-cal,
+            .mid-row > .card-weather { flex: 1 1 50%; width: 50%; }
+
+       ② 旧竖版遗留（顶行「时钟|日历」并排、天气单独一行）：
+            #mainPage.landscape .card-cal     { flex: 0 1 49%; }
+            #mainPage.landscape .card-weather { flex: 1 1 100%; }
+
+     两组 specificity 相同（都是 0,2,0 一类的三选择器级别），
+     而 ② 在样式表里更靠后 ⇒ ② 胜出。
+     于是日历 flex-grow=0（永不长大）、天气 flex-grow=1（吃掉所有余量），
+     470px 的中段被切成 147 + 300。
+
+   修法（不改 index.html，只在 web 版注入覆盖）：
+     在页面样式之后追加一段 <style>，用更高优先级把中段两列钉回 50/50，
+     并且只作用于 .mid-row 的直接子卡 —— 不去动 clock/poem 等其它板块，
+     避免误伤已经调好的版面。
+   =========================================================================== */
+(function () {
+  function injectMidRowFix() {
+    try {
+      if (document.getElementById("kdMidRowFix")) { return; }
+      var st = document.createElement("style");
+      st.id = "kdMidRowFix";
+      st.type = "text/css";
+      /* 关键点：
+         · flex-grow 必须两边都是 1（原来日历是 0，所以永远不长）
+         · flex-basis 50% + width 50% 双保险（老 WebKit 对 flex-basis 支持不齐）
+         · box-sizing 保证 50% 不含 margin，两卡 + 两道 9px 缝正好铺满
+         · min-width:0 允许内容偏长时正常收缩，而不是把对方顶出去 */
+      st.appendChild(document.createTextNode(
+        "#topWrap .mid-row > .card-cal," +
+        "#topWrap .mid-row > .card-weather {" +
+        "  -webkit-box-flex: 1 1 50% !important;" +
+        "  -webkit-flex: 1 1 50% !important;" +
+        "  flex: 1 1 50% !important;" +
+        "  width: 50% !important;" +
+        "  min-width: 0 !important;" +
+        "  -webkit-box-sizing: border-box !important;" +
+        "  box-sizing: border-box !important;" +
+        "}" +
+        /* 旧竖版给 .card-cal 定的 49% 基准也一并纠正（万一上一条被更狠的规则压住） */
+        "#mainPage.landscape #topWrap .mid-row > .card-cal {" +
+        "  -webkit-flex: 1 1 50% !important; flex: 1 1 50% !important; width: 50% !important;" +
+        "}" +
+        "#mainPage.landscape #topWrap .mid-row > .card-weather {" +
+        "  -webkit-flex: 1 1 50% !important; flex: 1 1 50% !important; width: 50% !important;" +
+        "}"
+      ));
+      var head = document.head || document.getElementsByTagName("head")[0] || document.documentElement;
+      head.appendChild(st);
+    } catch (e) {}
+  }
+  injectMidRowFix();
+  /* 老引擎可能把 <head> 里后插的样式排到最后才生效，DOM 就绪后再补一次并复测 */
+  window.addEventListener("load", function () {
+    injectMidRowFix();
+    setTimeout(function () {
+      try {
+        var mr = document.querySelector("#topWrap .mid-row");
+        var cal = document.querySelector("#topWrap .mid-row > .card-cal");
+        var wx = document.querySelector("#topWrap .mid-row > .card-weather");
+        if (!mr || !cal || !wx) { return; }
+        var mw = mr.clientWidth || 0, cw = cal.clientWidth || 0, ww = wx.clientWidth || 0;
+        /* 两卡宽度差超过 12px 就说明 50/50 没生效 —— 兜底改成显式像素宽 */
+        if (mw > 120 && Math.abs(cw - ww) > 12) {
+          var half = Math.floor((mw - 18) / 2);   /* 18 = 两侧 9px 缝 */
+          if (half > 60) {
+            cal.style.setProperty("width", half + "px", "important");
+            cal.style.setProperty("flex", "0 0 " + half + "px", "important");
+            wx.style.setProperty("width", half + "px", "important");
+            wx.style.setProperty("flex", "0 0 " + half + "px", "important");
+            try { if (window.kdCalFit) { window.kdCalFit(); } } catch (e2) {}
+          }
+        }
+      } catch (e1) {}
+    }, 800);
+  });
+  /* 供自动化测试调用 */
+  window.kdMidRowFix = injectMidRowFix;
 })();
