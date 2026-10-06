@@ -1502,3 +1502,121 @@
   /* 供自动化测试调用 */
   window.kdMidRowFix = injectMidRowFix;
 })();
+
+/* ===========================================================================
+   V4.1 适配（2026-10-07）
+   V4.1_808 相比 V3.3 有两处变化需要网页版另行处理：
+     ① 新增「首次安装授权引导框」#onboard —— 在 APK 里引导用户去系统设置授予
+        常驻权限。网页端没有这些系统权限可授予；而 bridgeOK() 因为垫片实现了
+        KindleBridge.get 而返回 true，导致这个全屏弹窗会照样弹出来，
+        还带着一排点了没反应的「去授予」按钮。这里整个屏蔽掉。
+     ② 诗歌默认一次显示 2 条（中+英）。英文句子长、会折行，
+        V4.1 的 .card-poem 高度装不下（实测需 160px、只有 119px），末条被裁。
+        这里把诗歌字号按可用高度收敛，并让诗句块吃满卡片。
+   =========================================================================== */
+(function () {
+  /* -------- ① 屏蔽网页端的授权引导框 -------- */
+  try {
+    var st = document.createElement("style");
+    st.id = "kdNoOnboard";
+    st.type = "text/css";
+    st.appendChild(document.createTextNode(
+      "#onboard{ display:none !important; }"
+    ));
+    (document.head || document.documentElement).appendChild(st);
+  } catch (e) {}
+
+  /* 首次启动不再自动弹 */
+  window.kdOnboardIfFirst = function () { /* 网页端无需授权引导 */ };
+
+  /* 设置页里若有人点了「首次权限引导」，给一句人话而不是弹个空框 */
+  window.kdOnboardOpen = function () {
+    var msg = "网页版运行在浏览器里，不需要安卓系统授权。";
+    try { if (typeof kdToast === "function") { kdToast(msg); return; } } catch (e) {}
+    try { window.alert(msg); } catch (e2) {}
+  };
+  window.kdOnboardClose = function () {
+    var ob = document.getElementById("onboard");
+    if (ob) { ob.style.display = "none"; }
+    try { storeSet("kd_onboard_v1", "1"); } catch (e) {}
+  };
+
+  /* -------- ② 诗歌：让两条诗（中+英）完整装进卡片 -------- */
+  /* 关键：不能写内联样式。rotatePoem() 每次轮换都会往 #poemBox 上写
+     style.fontSize = '11px'（无 important），会把我们的内联值冲掉；
+     而样式表里的 !important 压得住「无 important 的内联」，所以写进 <style>。
+     选择器用两个 id（#mainPage #poemBox）保证比垫片里那条 .poem-box 规则更specific。 */
+  var _poemStyle = null;
+  function poemStyleEl() {
+    if (_poemStyle) { return _poemStyle; }
+    var s = document.createElement("style");
+    s.id = "kdPoemFit";
+    s.type = "text/css";
+    (document.head || document.documentElement).appendChild(s);
+    _poemStyle = s;
+    return s;
+  }
+  function setPoemFs(px) {
+    var el = poemStyleEl();
+    el.textContent = "#mainPage #poemBox{ font-size:" + px + "px !important; }";
+  }
+  function clearPoemFs() {
+    if (_poemStyle) { _poemStyle.textContent = ""; }
+  }
+
+  function fitPoem() {
+    try {
+      var box = document.getElementById("poemBox");
+      if (!box) { return; }
+      var avail = box.clientHeight;
+      if (!(avail > 40)) { return; }
+      /* 从当前生效字号出发，只缩不放；字变小会改变折行，
+         收缩比不是线性的，所以写进样式表后重新实测、迭代收敛（最多 8 次） */
+      var cur = parseFloat(getComputedStyle(box).fontSize) || 0;
+      if (!(cur > 0)) { return; }
+      var next = cur;
+      for (var i = 0; i < 8; i++) {
+        var need = box.scrollHeight;
+        if (!(need > avail + 1)) { break; }
+        var cand = Math.floor(next * ((avail - 1) / need) * 100) / 100;
+        if (cand >= next - 0.2) { break; }
+        next = cand;
+        setPoemFs(next);
+        void box.getBoundingClientRect();   /* 强制回流，下次 scrollHeight 才是新值 */
+      }
+      /* 收尾校一次：万一还差一点，再降一档；富余很多就还原 */
+      var need2 = box.scrollHeight;
+      if (need2 > avail + 1) {
+        var cur2 = parseFloat(getComputedStyle(box).fontSize) || 0;
+        if (cur2 > 8) { setPoemFs(Math.floor(cur2 * ((avail - 1) / need2) * 100) / 100); }
+      } else if (need2 < avail * 0.55 && next < cur) {
+        /* 富余超过 45%（说明换了一首很短的诗），放开回到基准字号 */
+        clearPoemFs();
+      }
+    } catch (e1) {}
+  }
+
+  /* 诗歌会轮换，每次重排后都要再量一次；用 MutationObserver 盯住内容变化 */
+  try {
+    var _fitPending = null;
+    var _scheduleFit = function () {
+      if (_fitPending) { clearTimeout(_fitPending); }
+      _fitPending = setTimeout(function () { _fitPending = null; fitPoem(); }, 120);
+    };
+    window.addEventListener("load", function () {
+      _scheduleFit();
+      setTimeout(_scheduleFit, 900);
+      setTimeout(_scheduleFit, 2500);
+    });
+    window.addEventListener("resize", _scheduleFit);
+    if (window.MutationObserver) {
+      var target = document.getElementById("poemBox");
+      if (target) {
+        new MutationObserver(_scheduleFit).observe(target, { childList: true, subtree: true, characterData: true });
+      }
+    }
+  } catch (e2) {}
+
+  /* 供自动化测试调用 */
+  window.kdFitPoem = fitPoem;
+})();
