@@ -1558,7 +1558,17 @@
   }
   function setPoemFs(px) {
     var el = poemStyleEl();
-    el.textContent = "#mainPage #poemBox{ font-size:" + px + "px !important; }";
+    /* 三条一起给，缺一条就收不住：
+         · 正文字号（主旋钮）
+         · 行高 1.45 -> 1.30（不吃可读性，白赚约 10% 高度）
+         · 落款字号：.poem-meta 被钉成固定 15px，**不吃 em**，中英两条落款
+           就硬占掉约 53px，正文再怎么缩也填不平那 8~20px 的缺口 ——
+           所以落款必须跟着正文一起按比例降（下限 11px，保证还能看清）。 */
+    var meta = Math.max(11, Math.min(15, Math.round(px * 0.53 * 10) / 10));
+    el.textContent =
+      "#mainPage #poemBox{ font-size:" + px + "px !important; }" +
+      "#mainPage #poemBox .poem-line{ line-height:1.30 !important; }" +
+      "#mainPage #poemBox .poem-meta{ font-size:" + meta + "px !important; }";
   }
   function clearPoemFs() {
     if (_poemStyle) { _poemStyle.textContent = ""; }
@@ -1579,9 +1589,11 @@
       var base = parseFloat(getComputedStyle(box).fontSize) || 0;
       if (!(base > 0)) { return; }
 
-      /* 可读下限：再挤也不小于基准的 60%（825px 设计高下约 17px），
-         宁可让极长的诗留一点裁切，也不缩成蚂蚁字 */
-      var floor = Math.max(11, Math.round(base * 0.6 * 10) / 10);
+      /* 可读下限：基准的 45%（825px 设计高下约 12.8px）。
+         原来卡在 60%（17px）：落款是固定 15px 不吃 em，正文缩到 17px 时
+         中英两条落款 + 正文仍要 125px，而卡片只有 117px —— 于是长诗永远差 8~20px。
+         现在落款跟着一起降，实际很少会真降到这个下限。 */
+      var floor = Math.max(10, Math.round(base * 0.45 * 10) / 10);
 
       var next = base;
       for (var i = 0; i < 8; i++) {
@@ -1620,4 +1632,168 @@
 
   /* 供自动化测试调用 */
   window.kdFitPoem = fitPoem;
+})();
+
+/* ===========================================================================
+   修复 8：音乐「点了暂停，停一下又自己放起来」
+   ---------------------------------------------------------------------------
+   症状（用户可见）：
+     点 MUSIC 暂停，歌曲确实停了，但过一两秒又自动继续；按钮深色/白色来回横跳。
+
+   根因（V4.1 源码级定位，见 index.html 11643~11804）：
+     V4.1 为对付「老安卓 WebView 里 play() 静默失败」加了三重自动推力，
+     它们全部以 `a.paused === true` 当作「播放失败」的判据 ——
+     而它**区分不了「用户主动暂停」和「播放器没起来」**：
+
+       ① muTryPlay(a, n)  —— 150ms 递进重试，最多 12 次（约 2 秒）
+              var done = function () { return !!(a && a.src && !a.paused); };
+              setTimeout(function () { if (!done()) { muTryPlay(a, n + 1); } }, 150);
+
+       ② muKickPlay(a)    —— 只要 a.paused 为真就 load() + 重赋 src + play()
+              if (!a.paused) { return false; }
+              a.load(); a.src = a.src; a.play();
+
+       ③ muWatchTick()    —— applyTimers 里每秒一次，只要 _muWantPlay 还是 true 就重试
+              if (_muWantPlay) { ... muKickPlay(a); }
+
+     用户点暂停走的是 muSmartClick 的「页面 <audio> 通道」分支（12315~12322），
+     那里只调了 a.pause()，**没有把 _muWantPlay 清掉**（原生通道那支才清），
+     于是 ③ 每秒都把歌"救"回来；①②③ 任意一条命中，暂停就失效。
+
+   修法（全部在垫片里做，不动 APK、不动 index.html）：
+     · 记一份「用户主动停下」的状态 _kdMuPaused
+     · 三条自动推力（muKickPlay / muTryPlay / 看门狗）先问这个状态，
+       是真暂停就直接掐掉，一下都不许再碰播放器
+     · 给 <audio> 的 play() 加闸：暂停期间任何自动 play() 都不放行；
+       同时在 play / playing 事件上再加一道网，真漏过去也立刻按回去
+     · 用户自己按播放（MUSIC 继续 / 点歌 / 切曲 / 试听）时先解除标记，
+       保证「再点一次继续」照常能用
+   ========================================================================= */
+(function () {
+  var _uPaused = false;   /* 用户主动暂停中 —— 自动推力一律让路 */
+
+  function setWant(v) { try { window._muWantPlay = !!v; } catch (e) {} }
+  function clearRetry() {
+    try { window._muRetryCnt = 0; } catch (e1) {}
+    try { window._muRetryAt = 0; } catch (e2) {}
+  }
+  /* 用户（或到点自动停止）按下暂停 */
+  function markPause() {
+    _uPaused = true;
+    setWant(false);
+    try { window._muSounded = false; } catch (e1) {}
+    clearRetry();
+  }
+  /* 用户明确要听 */
+  function markPlay() {
+    _uPaused = false;
+    setWant(true);
+    clearRetry();
+  }
+  window.kdMuPaused = function () { return _uPaused; };
+  window.kdMuPause = markPause;
+  window.kdMuResume = markPlay;
+
+  /* ---- 取 <audio> 元素（包一层，顺手把钩子装上）---- */
+  var _origAudioEl = window.muAudioEl;
+  function rawAudioEl() {
+    var a = null;
+    try { a = _origAudioEl ? _origAudioEl() : null; } catch (e) { a = null; }
+    if (!a) { try { a = document.getElementById("muAudio"); } catch (e2) { a = null; } }
+    return a;
+  }
+  function hookEl(a) {
+    if (!a || a.__kdMuHook) { return a; }
+    try { a.__kdMuHook = 1; } catch (e0) {}
+    var oPlay = a.play, oPause = a.pause;
+    try {
+      a.play = function () {
+        if (_uPaused) { return undefined; }   /* 暂停期间：一切自动续播都不放行 */
+        markPlay();
+        try { return oPlay.apply(a, arguments); } catch (e) { return undefined; }
+      };
+      a.pause = function () {
+        markPause();
+        try { return oPause.apply(a, arguments); } catch (e) { return undefined; }
+      };
+    } catch (eH) {}
+    /* 最后一道网：万一有漏网的自动播放真起来了，立刻按回去 */
+    var veto = function () {
+      if (!_uPaused) { return; }
+      try { if (!a.paused) { oPause.apply(a, []); } } catch (e) {}
+      setWant(false);
+      try { window._muSounded = false; } catch (e2) {}
+      try { if (window.musicSyncState) { window.musicSyncState(); } } catch (e3) {}
+    };
+    try { a.addEventListener("play", veto, false); } catch (e1) {}
+    try { a.addEventListener("playing", veto, false); } catch (e2) {}
+    return a;
+  }
+  window.muAudioEl = function () { return hookEl(rawAudioEl()); };
+
+  /* ---- 三条自动推力：真暂停就掐掉 ---- */
+  var _origKick = window.muKickPlay;
+  window.muKickPlay = function (a) {
+    if (_uPaused) { return false; }
+    return _origKick ? _origKick(a) : false;
+  };
+  var _origTry = window.muTryPlay;
+  window.muTryPlay = function (a, n) {
+    if (_uPaused) { return undefined; }
+    return _origTry ? _origTry(a, n) : undefined;
+  };
+  var _origWatch = window.muWatchTick;
+  window.muWatchTick = function () {
+    if (_uPaused) {
+      /* 暂停期间看门狗只负责把 UI 刷成「已暂停」，不做任何播放动作 */
+      setWant(false);
+      try { window._muSounded = false; } catch (e) {}
+      clearRetry();
+      try { if (window.musicSyncState) { window.musicSyncState(); } } catch (e2) {}
+      return undefined;
+    }
+    return _origWatch ? _origWatch() : undefined;
+  };
+
+  /* ---- 用户明确要听的入口：先解除暂停标记 ---- */
+  var _origSmartClick = window.muSmartClick;
+  window.muSmartClick = function () {
+    var a = rawAudioEl();
+    if (a && (a.currentSrc || a.src) && a.paused) { markPlay(); }
+    return _origSmartClick ? _origSmartClick() : undefined;
+  };
+  var _origToggle = window.musicToggle;
+  window.musicToggle = function () {
+    var a = rawAudioEl();
+    if (a && a.paused) { markPlay(); }
+    return _origToggle ? _origToggle() : undefined;
+  };
+  var _origAToggle = window.muAudioToggle;
+  window.muAudioToggle = function () {
+    var a = rawAudioEl();
+    if (a && a.paused) { markPlay(); }
+    return _origAToggle ? _origAToggle() : undefined;
+  };
+  var _origAPlay = window.muAudioPlay;
+  window.muAudioPlay = function (i) {
+    markPlay();
+    return _origAPlay ? _origAPlay(i) : undefined;
+  };
+  var _origStartLoop = window.musicStartLoop;
+  window.musicStartLoop = function () {
+    markPlay();
+    return _origStartLoop ? _origStartLoop() : undefined;
+  };
+  var _origPlayFile = window.muPlayFile;
+  window.muPlayFile = function (p) {
+    if (p) { markPlay(); }   /* 指定了曲目 = 明确要听（自动跳坏曲也走这里，符合预期） */
+    return _origPlayFile ? _origPlayFile(p) : undefined;
+  };
+
+  /* ---- 音乐模块关掉 / 时长到点：等同于用户按下暂停 ---- */
+  var _origDurStop = window.muDurStop;
+  window.muDurStop = function () {
+    markPause();
+    return _origDurStop ? _origDurStop() : undefined;
+  };
 })();
