@@ -1570,28 +1570,29 @@
       if (!box) { return; }
       var avail = box.clientHeight;
       if (!(avail > 40)) { return; }
-      /* 从当前生效字号出发，只缩不放；字变小会改变折行，
-         收缩比不是线性的，所以写进样式表后重新实测、迭代收敛（最多 8 次） */
-      var cur = parseFloat(getComputedStyle(box).fontSize) || 0;
-      if (!(cur > 0)) { return; }
-      var next = cur;
+
+      /* 每次都先撤掉上一次的收敛结果，从「设计基准字号」重新量。
+         否则诗歌轮换时会在上一首已缩小的字号上继续缩，几轮换下来会缩到看不清
+         （实测出现过 28px -> 20px -> 16px -> 12px 的累积塌陷）。 */
+      clearPoemFs();
+      void box.getBoundingClientRect();
+      var base = parseFloat(getComputedStyle(box).fontSize) || 0;
+      if (!(base > 0)) { return; }
+
+      /* 可读下限：再挤也不小于基准的 60%（825px 设计高下约 17px），
+         宁可让极长的诗留一点裁切，也不缩成蚂蚁字 */
+      var floor = Math.max(11, Math.round(base * 0.6 * 10) / 10);
+
+      var next = base;
       for (var i = 0; i < 8; i++) {
         var need = box.scrollHeight;
         if (!(need > avail + 1)) { break; }
         var cand = Math.floor(next * ((avail - 1) / need) * 100) / 100;
         if (cand >= next - 0.2) { break; }
+        if (cand < floor) { next = floor; setPoemFs(next); void box.getBoundingClientRect(); break; }
         next = cand;
         setPoemFs(next);
         void box.getBoundingClientRect();   /* 强制回流，下次 scrollHeight 才是新值 */
-      }
-      /* 收尾校一次：万一还差一点，再降一档；富余很多就还原 */
-      var need2 = box.scrollHeight;
-      if (need2 > avail + 1) {
-        var cur2 = parseFloat(getComputedStyle(box).fontSize) || 0;
-        if (cur2 > 8) { setPoemFs(Math.floor(cur2 * ((avail - 1) / need2) * 100) / 100); }
-      } else if (need2 < avail * 0.55 && next < cur) {
-        /* 富余超过 45%（说明换了一首很短的诗），放开回到基准字号 */
-        clearPoemFs();
       }
     } catch (e1) {}
   }
